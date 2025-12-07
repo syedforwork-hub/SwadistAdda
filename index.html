@@ -8,6 +8,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * {
@@ -369,11 +370,19 @@
     <div id="toast" class="toast"></div>
 
     <script>
-        // Real-time sync across devices/tabs
-        const SYNC_EVENT = 'swadist-adda-sync';
+    /* ===============================
+       🔗 Supabase Cloud Config
+    ============================== */
+    const SUPABASE_URL = "https://jtfruyqwcjwcghfngted.supabase.co";
+    const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imp0ZnJ1eXF3Y2p3Y2doZm5ndGVkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUwNDc2NTMsImV4cCI6MjA4MDYyMzY1M30.D75cNytsOvu2SXpd70vRxn6DYB1lHbqJb1uDMYiSqT8";
+
+    const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+    // Real-time sync across devices/tabs (existing)
+    const SYNC_EVENT = 'swadist-adda-sync';
         
-        // Database Module
-        const DB = {
+    // Database Module (existing)
+    const DB = {
             name: 'SwadistAddaDB',
             version: 12, // Increased version for new structure
             db: null,
@@ -557,33 +566,186 @@
         }
 
         // App State
-        let state = {
-            currentPage: 'dashboard',
-            inventory: [],
-            customers: [],
-            sales: [],
-            purchases: [],
-            offers: [],
-            rewards: [],
-            offerProgress: [],
-            udhaarTransactions: [],
-            suppliers: [],
-            supplierUdhaarTransactions: [],
-            supplierBalances: [],
-            cart: [],
-            selectedCustomer: null, 
-            selectedPaymentMode: 'Cash',
-            saleDate: new Date().toISOString().split('T')[0],
-            salesFilterFromDate: new Date().toISOString().split('T')[0],
-            salesFilterToDate: new Date().toISOString().split('T')[0],
-            isLoading: false,
-            settings: {
-                businessName: 'Swadist Adda',
-                currency: '₹',
-                taxRate: 0,
-                printReceipts: true
+            let state = {
+                currentPage: 'dashboard',
+                inventory: [],
+                customers: [],
+                sales: [],
+                purchases: [],
+                offers: [],
+                rewards: [],
+                offerProgress: [],
+                udhaarTransactions: [],
+                suppliers: [],
+                supplierUdhaarTransactions: [],
+                supplierBalances: [],
+                cart: [],
+                selectedCustomer: null, 
+                selectedPaymentMode: 'Cash',
+                saleDate: new Date().toISOString().split('T')[0],
+                salesFilterFromDate: new Date().toISOString().split('T')[0],
+                salesFilterToDate: new Date().toISOString().split('T')[0],
+                isLoading: false,
+                settings: {
+                    businessName: 'Swadist Adda',
+                    currency: '₹',
+                    taxRate: 0,
+                    printReceipts: true
+                },
+            
+                // 🔐 Auth state
+                user: null,        // Supabase auth user
+                role: null,        // 'owner' | 'staff'
+                authLoading: false // for login/signup buttons
+            };
+            /* ===============================
+               🔐 Auth & Role Helpers
+            ============================== */
+        
+            function setAuthLoading(flag) {
+                state.authLoading = flag;
+                render();
             }
-        };
+        
+            async function fetchProfile(user) {
+                try {
+                    const { data, error } = await supabase
+                        .from('profiles')
+                        .select('*')
+                        .eq('user_id', user.id)
+                        .maybeSingle();
+        
+                    if (error) {
+                        console.error('Profile fetch error', error);
+                        return null;
+                    }
+        
+                    if (!data) {
+                        // First ever profile = owner, rest = staff
+                        const { data: existingOwners } = await supabase
+                            .from('profiles')
+                            .select('id')
+                            .eq('role', 'owner')
+                            .limit(1);
+        
+                        const role = existingOwners && existingOwners.length === 0 ? 'owner' : 'staff';
+        
+                        const { data: created, error: insertError } = await supabase
+                            .from('profiles')
+                            .insert({
+                                user_id: user.id,
+                                email: user.email,
+                                role
+                            })
+                            .select()
+                            .single();
+        
+                        if (insertError) {
+                            console.error('Profile insert error', insertError);
+                            return { role };
+                        }
+        
+                        return created;
+                    }
+        
+                    return data;
+                } catch (err) {
+                    console.error('fetchProfile error', err);
+                    return null;
+                }
+            }
+        
+            async function handleLogin(e) {
+                e.preventDefault();
+                const form = e.target;
+                const email = form.email.value.trim();
+                const password = form.password.value.trim();
+                if (!email || !password) return;
+        
+                try {
+                    setAuthLoading(true);
+                    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+                    setAuthLoading(false);
+        
+                    if (error) {
+                        showToast('Login failed: ' + error.message);
+                        return;
+                    }
+        
+                    state.user = data.user;
+                    const profile = await fetchProfile(data.user);
+                    state.role = profile?.role || 'staff';
+        
+                    // Now start the existing app
+                    initApp();
+                } catch (err) {
+                    setAuthLoading(false);
+                    console.error('Login error', err);
+                    showToast('Login error: ' + err.message);
+                }
+            }
+        
+            async function handleRegister(e) {
+                e.preventDefault();
+                const form = e.target;
+                const email = form.email.value.trim();
+                const password = form.password.value.trim();
+                if (!email || !password) return;
+        
+                try {
+                    setAuthLoading(true);
+                    const { error } = await supabase.auth.signUp({ email, password });
+                    setAuthLoading(false);
+        
+                    if (error) {
+                        showToast('Signup failed: ' + error.message);
+                        return;
+                    }
+        
+                    showToast('Account created! Please login.');
+                    // Re-render auth screen
+                    render();
+                } catch (err) {
+                    setAuthLoading(false);
+                    console.error('Signup error', err);
+                    showToast('Signup error: ' + err.message);
+                }
+            }
+        
+            async function handleLogout() {
+                try {
+                    await supabase.auth.signOut();
+                } catch (err) {
+                    console.error('Logout error', err);
+                }
+                state.user = null;
+                state.role = null;
+                // Do not clear IndexedDB: keep offline data
+                render();
+            }
+        
+            async function checkSession() {
+                try {
+                    const { data: { user } } = await supabase.auth.getUser();
+                    if (!user) {
+                        state.user = null;
+                        state.role = null;
+                        render(); // shows auth screen
+                        return;
+                    }
+                    state.user = user;
+                    const profile = await fetchProfile(user);
+                    state.role = profile?.role || 'staff';
+                    // We already have a session → go into app
+                    initApp();
+                } catch (err) {
+                    console.error('Session check error', err);
+                    // If Supabase unavailable, still allow app offline (no auth)
+                    state.user = null;
+                    state.role = null;
+                    render();
+                }
+            }
 
         // Initialize App
         async function initApp() {
@@ -718,10 +880,88 @@
         // Render Functions
         function render() {
             const app = document.getElementById('app');
-            app.innerHTML = renderMainApp();
-            attachMainListeners();
+            if (!state.user) {
+                app.innerHTML = renderAuth();
+                attachAuthListeners();
+            } else {
+                app.innerHTML = renderMainApp();
+                attachMainListeners();
+            }
         }
+        function renderAuth() {
+    return `
+        <div class="min-h-screen flex items-center justify-center">
+            <div class="max-w-md w-full mx-4 bg-white rounded-2xl shadow-xl p-6">
+                <h1 class="text-2xl font-bold text-center text-purple-600 mb-2">
+                    Swadist Adda POS
+                </h1>
+                <p class="text-xs text-center text-gray-500 mb-4">
+                    Cloud Login • Owner / Staff Roles • Offline POS
+                </p>
 
+                <div class="grid grid-cols-2 gap-2 mb-4 text-[11px] text-purple-700">
+                    <div class="bg-purple-50 rounded-md px-2 py-1">✅ Central Data (Supabase)</div>
+                    <div class="bg-purple-50 rounded-md px-2 py-1">✅ Offline IndexedDB</div>
+                    <div class="bg-purple-50 rounded-md px-2 py-1">✅ Owner / Staff</div>
+                    <div class="bg-purple-50 rounded-md px-2 py-1">✅ Multi-device Ready</div>
+                </div>
+
+                <div class="border-b pb-2 mb-3 text-sm font-semibold text-gray-700 text-center">
+                    Login
+                </div>
+
+                <form id="login-form" class="space-y-3 mb-4">
+                    <div>
+                        <label class="text-xs font-medium text-gray-700">Email</label>
+                        <input name="email" type="email" required class="input mt-1" />
+                    </div>
+                    <div>
+                        <label class="text-xs font-medium text-gray-700">Password</label>
+                        <input name="password" type="password" required minlength="6" class="input mt-1" />
+                    </div>
+                    <button class="btn btn-primary w-full">
+                        ${state.authLoading ? '<span class="loading"></span>' : 'Login'}
+                    </button>
+                </form>
+
+                <div class="border-b pb-2 mb-3 text-sm font-semibold text-gray-700 text-center">
+                    Or Create New Account
+                </div>
+
+                <form id="register-form" class="space-y-3">
+                    <div>
+                        <label class="text-xs font-medium text-gray-700">Email</label>
+                        <input name="email" type="email" required class="input mt-1" />
+                    </div>
+                    <div>
+                        <label class="text-xs font-medium text-gray-700">Password (min 6)</label>
+                        <input name="password" type="password" required minlength="6" class="input mt-1" />
+                    </div>
+                    <button class="w-full bg-slate-700 text-white py-2 rounded-md text-sm font-semibold">
+                        ${state.authLoading ? 'Please wait...' : 'Sign Up'}
+                    </button>
+                </form>
+
+                <p class="mt-3 text-[11px] text-gray-500 text-center">
+                    First registered user becomes <span class="font-semibold text-purple-600">Owner</span>.
+                    Others become <span class="font-semibold text-purple-600">Staff</span>.
+                </p>
+            </div>
+        </div>
+    `;
+}
+
+function attachAuthListeners() {
+    const loginForm = document.getElementById('login-form');
+    if (loginForm) {
+        loginForm.onsubmit = handleLogin;
+    }
+
+    const registerForm = document.getElementById('register-form');
+    if (registerForm) {
+        registerForm.onsubmit = handleRegister;
+    }
+}
         function renderMainApp() {
             return `
                 <div class="min-h-screen">
@@ -1770,6 +2010,9 @@
             `;
             
             createModal('Menu & Information', menuContent);
+            <button onclick="handleLogout()" class="btn bg-red-600 text-white w-full mt-2">
+                Logout
+            </button>
         }
 
         // Enhanced Export Modal with All Sales Date Export
@@ -4285,8 +4528,8 @@
             }
         }
 
-        // Initialize on load
-        window.addEventListener('DOMContentLoaded', initApp);
+        // Initialize on load (check Supabase session first)
+        window.addEventListener('DOMContentLoaded', checkSession);
     </script>
 </body>
 </html>
